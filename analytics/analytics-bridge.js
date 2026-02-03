@@ -154,26 +154,99 @@
         console.error('[Analytics] Attempted to submit without initialization.');
         return;
       }
-      
-      const jsonPayload = JSON.stringify(this._reportData);
-      
-      // Check if running in React Native WebView
-      if (window.ReactNativeWebView) {
-        window.ReactNativeWebView.postMessage(jsonPayload);
-        console.log('[Analytics] Report submitted to React Native');
-      } else {
-        // Fallback for development/testing
-        console.log('------------------------------------------');
-        console.log('[Analytics-Dev-Mode] SUBMITTING PAYLOAD:');
-        console.log(JSON.stringify(this._reportData, null, 2));
-        console.log('------------------------------------------');
+      // Build canonical payload
+      const payload = JSON.parse(JSON.stringify(this._reportData));
+      // ensure canonical fields expected by hosts
+      if (!payload.sessionId) payload.sessionId = (Date.now() + '-' + Math.random().toString(36));
+      if (!payload.timestamp) payload.timestamp = new Date().toISOString();
+      // map existing fields to common names
+      payload.xpEarned = payload.xpEarned || payload.xpEarnedTotal || 0;
+      payload.xpTotal = payload.xpTotal || payload.xpEarnedTotal || 0;
+      payload.bestXp = payload.bestXp || payload.xpEarnedTotal || 0;
+
+      // Try delivery via several bridges, best-effort. If window is not present (test/node), just return payload
+      if (typeof window === 'undefined') {
+        return payload;
       }
 
-      // Clear the accumulated data after submission to avoid duplication in the same session
+      // helpers for persistence/queueing
+      const LS_KEY = 'ignite_pending_sessions_jsplugin';
+      function savePending(p) {
+        try {
+          const list = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+          list.push(p);
+          localStorage.setItem(LS_KEY, JSON.stringify(list));
+        } catch (e) { /* ignore */ }
+      }
+
+    function trySend(p) {
+      let sent = false;
+      // site-local bridge
+      try {
+        if (window.myJsAnalytics && typeof window.myJsAnalytics.trackGameSession === 'function') {
+          window.myJsAnalytics.trackGameSession(p);
+          sent = true;
+        }
+      } catch (e) { /* continue */ }
+
+      // React Native WebView
+      try {
+        if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+          window.ReactNativeWebView.postMessage(JSON.stringify(p));
+          sent = true;
+        }
+      } catch (e) { /* continue */ }
+
+      // parent/frame
+      try {
+        const target = window.__GodotAnalyticsParentOrigin || '*';
+        window.parent.postMessage(p, target);
+        sent = true;
+      } catch (e) { /* continue */ }
+
+      // Always log for visibility
+      console.log('------------------------------------------');
+      console.log('[Analytics] SUBMITTING PAYLOAD:');
+      console.log(JSON.stringify(p, null, 2));
+      console.log('------------------------------------------');
+
+      return sent;
+    }      function flushPending() {
+        try {
+          const list = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+          if (!list || !list.length) return;
+          list.forEach(function (p) { trySend(p); });
+          localStorage.removeItem(LS_KEY);
+        } catch (e) { /* ignore */ }
+      }
+
+      // attempt send
+      const ok = trySend(payload);
+      if (!ok) savePending(payload);
+
+      // ensure pending flush is registered once
+      try {
+        if (typeof window !== 'undefined') {
+          window.addEventListener && window.addEventListener('online', flushPending);
+          window.addEventListener && window.addEventListener('load', flushPending);
+          // listen for handshake message to set parent origin
+          window.addEventListener && window.addEventListener('message', function (ev) {
+            try {
+              const msg = (typeof ev.data === 'string') ? JSON.parse(ev.data) : ev.data;
+              if (msg && msg.type === 'ANALYTICS_CONFIG' && msg.parentOrigin) {
+                window.__GodotAnalyticsParentOrigin = msg.parentOrigin;
+              }
+            } catch (e) { /* ignore */ }
+          });
+          // try flushing shortly after submit to catch same-page parent
+          setTimeout(flushPending, 2000);
+        }
+      } catch (e) { /* ignore */ }
+
+      // Clear the accumulated data after submission to avoid duplication in the same session,
+      // adapting to the incremental submission pattern of the game script.
       this._reportData.diagnostics.levels = [];
       this._reportData.rawData = [];
-      // If we are sending incremental updates, we should reset the total for the next batch
-      // provided the backend sums these up.
       this._reportData.xpEarnedTotal = 0;
     }
     
