@@ -15,6 +15,7 @@ class AnalyticsManager {
       gameId: '',
       name: '',
       xpEarnedTotal: 0,
+      highestLevelPlayed: 0,
       rawData: [],
       diagnostics: {
         levels: []
@@ -42,6 +43,7 @@ class AnalyticsManager {
     
     this._reportData.gameId = gameId;
     this._reportData.name = sessionName;
+    this._reportData.highestLevelPlayed = 0;
     this._reportData.diagnostics.levels = [];
     this._reportData.rawData = [];
     this._reportData.xpEarnedTotal = 0;
@@ -66,7 +68,7 @@ class AnalyticsManager {
   
   /**
    * Start tracking a new level
-   * @param {string} levelId - Unique level identifier
+   * @param {string|number} levelId - Unique level identifier
    */
   startLevel(levelId) {
     if (!this._isInitialized) {
@@ -74,8 +76,11 @@ class AnalyticsManager {
       return;
     }
     
+    // Normalize to string to allow matching 1 vs '1'
+    const idString = String(levelId);
+
     const levelEntry = {
-      levelId,
+      levelId: idString,
       successful: false,
       timeTaken: 0,
       timeDirection: false,
@@ -84,17 +89,18 @@ class AnalyticsManager {
     };
     
     this._reportData.diagnostics.levels.push(levelEntry);
+    this._updateHighestLevel(idString);
   }
   
   /**
    * Complete a level and update totals
-   * @param {string} levelId - Level identifier
+   * @param {string|number} levelId - Level identifier
    * @param {boolean} successful - Whether level was completed successfully
    * @param {number} timeTakenMs - Time taken in milliseconds
    * @param {number} xp - XP earned for this level
    */
   endLevel(levelId, successful, timeTakenMs, xp) {
-    const level = this._getLevelById(levelId);
+    const level = this._getLevelById(String(levelId));
     
     if (level) {
       level.successful = successful;
@@ -110,7 +116,7 @@ class AnalyticsManager {
   
   /**
    * Record a specific user action/task within a level
-   * @param {string} levelId - Level identifier
+   * @param {string|number} levelId - Level identifier
    * @param {string} taskId - Task identifier
    * @param {string} question - Question text
    * @param {string} correctChoice - Correct answer
@@ -119,7 +125,7 @@ class AnalyticsManager {
    * @param {number} xp - XP earned for this task
    */
   recordTask(levelId, taskId, question, correctChoice, choiceMade, timeMs, xp) {
-    const level = this._getLevelById(levelId);
+    const level = this._getLevelById(String(levelId));
     
     if (level) {
       const isSuccessful = (correctChoice === choiceMade);
@@ -148,20 +154,95 @@ class AnalyticsManager {
       console.error('[Analytics] Attempted to submit without initialization.');
       return;
     }
-    
-    const jsonPayload = JSON.stringify(this._reportData);
-    
-    // Check if running in React Native WebView
-    if (window.ReactNativeWebView) {
-      window.ReactNativeWebView.postMessage(jsonPayload);
-      console.log('[Analytics] Report submitted to React Native');
-    } else {
-      // Fallback for development/testing
-      console.log('------------------------------------------');
-      console.log('[Analytics-Dev-Mode] SUBMITTING PAYLOAD:');
-      console.log(JSON.stringify(this._reportData, null, 2));
-      console.log('------------------------------------------');
+    // Build canonical payload
+    const payload = JSON.parse(JSON.stringify(this._reportData));
+    // ensure canonical fields expected by hosts
+    if (!payload.sessionId) payload.sessionId = (Date.now() + '-' + Math.random().toString(36));
+    if (!payload.timestamp) payload.timestamp = new Date().toISOString();
+    // map existing fields to common names
+    payload.xpEarned = payload.xpEarned || payload.xpEarnedTotal || 0;
+    payload.xpTotal = payload.xpTotal || payload.xpEarnedTotal || 0;
+    payload.bestXp = payload.bestXp || payload.xpEarnedTotal || 0;
+
+    // Try delivery via several bridges, best-effort. If window is not present (test/node), just return payload
+    if (typeof window === 'undefined') {
+      return payload;
     }
+
+    // helpers for persistence/queueing
+    const LS_KEY = 'ignite_pending_sessions_jsplugin';
+    function savePending(p) {
+      try {
+        const list = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+        list.push(p);
+        localStorage.setItem(LS_KEY, JSON.stringify(list));
+      } catch (e) { /* ignore */ }
+    }
+
+    function trySend(p) {
+      let sent = false;
+      // site-local bridge
+      try {
+        if (window.myJsAnalytics && typeof window.myJsAnalytics.trackGameSession === 'function') {
+          window.myJsAnalytics.trackGameSession(p);
+          sent = true;
+        }
+      } catch (e) { /* continue */ }
+
+      // React Native WebView
+      try {
+        if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+          window.ReactNativeWebView.postMessage(JSON.stringify(p));
+          sent = true;
+        }
+      } catch (e) { /* continue */ }
+
+      // parent/frame
+      try {
+        const target = window.__GodotAnalyticsParentOrigin || '*';
+        window.parent.postMessage(p, target);
+        sent = true;
+      } catch (e) { /* continue */ }
+
+      // debug fallback - console
+      if (!sent) {
+        try { console.log('Payload:' + JSON.stringify(p)); } catch (e) { /* swallow */ }
+      }
+
+      return sent;
+    }
+
+    function flushPending() {
+      try {
+        const list = JSON.parse(localStorage.getItem(LS_KEY) || '[]');
+        if (!list || !list.length) return;
+        list.forEach(function (p) { trySend(p); });
+        localStorage.removeItem(LS_KEY);
+      } catch (e) { /* ignore */ }
+    }
+
+    // attempt send
+    const ok = trySend(payload);
+    if (!ok) savePending(payload);
+
+    // ensure pending flush is registered once
+    try {
+      if (typeof window !== 'undefined') {
+        window.addEventListener && window.addEventListener('online', flushPending);
+        window.addEventListener && window.addEventListener('load', flushPending);
+        // listen for handshake message to set parent origin
+        window.addEventListener && window.addEventListener('message', function (ev) {
+          try {
+            const msg = (typeof ev.data === 'string') ? JSON.parse(ev.data) : ev.data;
+            if (msg && msg.type === 'ANALYTICS_CONFIG' && msg.parentOrigin) {
+              window.__GodotAnalyticsParentOrigin = msg.parentOrigin;
+            }
+          } catch (e) { /* ignore */ }
+        });
+        // try flushing shortly after submit to catch same-page parent
+        setTimeout(flushPending, 2000);
+      }
+    } catch (e) { /* ignore */ }
   }
   
   /**
@@ -177,12 +258,34 @@ class AnalyticsManager {
    */
   reset() {
     this._reportData.xpEarnedTotal = 0;
+    this._reportData.highestLevelPlayed = 0;
     this._reportData.rawData = [];
     this._reportData.diagnostics.levels = [];
     console.log('[Analytics] Data reset');
   }
   
   // --- Internal Helpers ---
+  
+  /**
+   * Update highest level reached based on numeric value in level ID
+   * @private
+   * @param {string|number} levelId
+   */
+  _updateHighestLevel(levelId) {
+    // Check if levelId is a valid number
+    const num = parseFloat(levelId);
+    const isNumeric = !isNaN(num) && isFinite(num);
+
+    if (isNumeric) {
+      const current = this._reportData.highestLevelPlayed;
+      if (num > current) {
+        this._reportData.highestLevelPlayed = num;
+      }
+    } else {
+      // If any non-numeric level is encountered, reset to 0
+      this._reportData.highestLevelPlayed = 0;
+    }
+  }
   
   /**
    * Find level by ID (searches backwards for most recent)

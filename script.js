@@ -36,15 +36,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     let selectedValue = null;
     let selectedElement = null;
     let placementHistory = [];
-        let equationStates = new Map(); // Add this line
+    let equationStates = new Map(); // Add this line
 
     // ANALYTICS
     let analytics = null;
     let levelStartTime = 0;
+    let taskStartTime = 0;
     let isLevelActive = false;
+    let totalMoves = 0;
+    let correctMoves = 0;
+    let incorrectMoves = 0;
+
+    // PROGRESS SYSTEM
+    let gameManager = null;
+    let progressInitialized = false;
 
     const B = 'B';
     const LEVEL_COMPLETION_XP = 5;
+    const CORRECT_PLACEMENT_XP = 1;
 
     // AUDIO
     const correctSound = new Audio('assets/audio/correct.mp3');
@@ -85,6 +94,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- INITIALIZATION ---
     try {
+        // Load puzzle data first
+        const response = await fetch('puzzles_division.json');
+        const puzzleData = await response.json();
+        config = puzzleData.config;
+        levels = puzzleData.levels;
+        
         // Initialize Analytics
         // Session persists for the whole gameplay duration (until page reload/close)
         if (typeof AnalyticsManager !== 'undefined') {
@@ -99,12 +114,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             
             analytics.initialize('CrossMath-division', sessionId);
+            
+            // Make analytics available in console for debugging
+            window.gameAnalytics = analytics;
+            window.viewAnalytics = () => {
+                console.log('%c Analytics Report Data ', 'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;');
+                console.table(analytics.getReportData());
+                return analytics.getReportData();
+            };
+            console.log('%c Analytics Initialized ', 'background: #2196F3; color: white; padding: 5px; border-radius: 3px;');
+            console.log('Use window.viewAnalytics() to see current analytics data');
         }
 
-        const response = await fetch('puzzles_division.json');
-        const puzzleData = await response.json();
-        config = puzzleData.config;
-        levels = puzzleData.levels;
+        // Initialize Progress System
+        await initializeProgressSystem();
+        
+        // Load progress (will use the new system)
         loadProgress();
         updateStartScreen();
         populateRulesModal();
@@ -118,17 +143,101 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    // --- PROGRESS SYSTEM INITIALIZATION ---
+    async function initializeProgressSystem() {
+        try {
+            console.log('%c Initializing Progress System ', 'background: #9C27B0; color: white; padding: 5px; border-radius: 3px;');
+            
+            // Create Progress Bridge (using local storage mode)
+            const progressBridge = new ProgressBridge({
+                useProvidedPayload: false,  // Not using backend payload for now
+                apiUrl: '',  // No API for now, local storage only
+                timeout: 5000,
+                retryAttempts: 2,
+                cacheDuration: 60000
+            });
+
+            // Create Storage Manager
+            const storageManager = new StorageManager({
+                storageKey: 'crossMath-divisionProgress',
+                useAsyncStorage: false  // Web environment
+            });
+
+            // Create Validator with proper level range
+            const finalLevel = levels.length > 0 ? levels[levels.length - 1].level : 100;
+            const validator = new Validator({
+                minLevel: 1,
+                maxLevel: finalLevel
+            });
+
+            // Create Game Manager
+            gameManager = new GameManager({
+                progressBridge: progressBridge,
+                storageManager: storageManager,
+                validator: validator,
+                analyticsBridge: analytics,  // Link to our analytics
+                config: {
+                    sync: {
+                        syncInterval: 300000,
+                        autoSave: true,
+                        sendAnalytics: true
+                    },
+                    features: {
+                        offlineMode: true,
+                        preferApiData: false,  // Prefer local for now
+                        strictValidation: true
+                    }
+                }
+            });
+
+            // Initialize the game manager
+            const result = await gameManager.initialize();
+            
+            if (result.success) {
+                console.log(`%c Progress System Ready - Starting Level: ${result.startLevel} `, 'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;');
+                progressInitialized = true;
+                
+                // Make it available for debugging
+                window.gameManager = gameManager;
+                window.viewProgress = () => {
+                    console.log('%c Progress State ', 'background: #9C27B0; color: white; padding: 5px; border-radius: 3px;');
+                    console.table(gameManager.getState());
+                    return gameManager.getState();
+                };
+                console.log('Use window.viewProgress() to see current progress state');
+            } else {
+                console.warn('Progress system initialized with fallback');
+                progressInitialized = false;
+            }
+        } catch (error) {
+            console.error('Error initializing progress system:', error);
+            progressInitialized = false;
+        }
+    }
+
     // --- PROGRESS MANAGEMENT ---
     function loadProgress() {
-        const savedProgress = localStorage.getItem('crossMath-divisionPlayerProgress');
-        if (savedProgress) {
-            playerProgress = JSON.parse(savedProgress);
-            console.log("Loaded player progress:", playerProgress);
+        // Try to load from the new progress system first
+        if (progressInitialized && gameManager) {
+            const state = gameManager.getState();
+            playerProgress.highestLevelCompleted = state.highestLevelPlayed || 0;
+            console.log("Loaded player progress from GameManager:", playerProgress);
+        } else {
+            // Fallback to old localStorage method
+            const savedProgress = localStorage.getItem('crossMath-divisionPlayerProgress');
+            if (savedProgress) {
+                playerProgress = JSON.parse(savedProgress);
+                console.log("Loaded player progress from localStorage:", playerProgress);
+            }
         }
     }
 
     function saveProgress() {
+        // Save using both systems for backward compatibility
         localStorage.setItem('crossMath-divisionPlayerProgress', JSON.stringify(playerProgress));
+        
+        // The new system saves automatically through gameManager.handleLevelComplete()
+        // No need to manually save here as well
     }
 
     // --- START SCREEN UPDATES ---
@@ -216,7 +325,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (analytics) {
             analytics.startLevel(`Level_${levelNumber}`);
             levelStartTime = Date.now();
+            taskStartTime = Date.now();
             isLevelActive = true;
+            totalMoves = 0;
+            correctMoves = 0;
+            incorrectMoves = 0;
         }
 
         // UI Transition: Fade out start screen
@@ -243,6 +356,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     function returnToStartScreen() {
         if (analytics && isLevelActive) {
             const timeTaken = Date.now() - levelStartTime;
+            
+            // Add metrics for incomplete level
+            analytics.addRawMetric('total_moves', totalMoves);
+            analytics.addRawMetric('correct_moves', correctMoves);
+            analytics.addRawMetric('incorrect_moves', incorrectMoves);
+            analytics.addRawMetric('level_quit', 'true');
+            analytics.addRawMetric('accuracy', totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) + '%' : '0%');
+            
             analytics.endLevel(`Level_${currentLevel}`, false, timeTaken, 0);
             analytics.submitReport();
             isLevelActive = false;
@@ -266,17 +387,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function onPuzzleComplete() {
+        const timeTaken = Date.now() - levelStartTime;
+        const totalXP = (correctMoves * CORRECT_PLACEMENT_XP) + LEVEL_COMPLETION_XP;
+        
         if (analytics && isLevelActive) {
-            const timeTaken = Date.now() - levelStartTime;
-            analytics.endLevel(`Level_${currentLevel}`, true, timeTaken, LEVEL_COMPLETION_XP);
+            // Add additional metrics
+            analytics.addRawMetric('total_moves', totalMoves);
+            analytics.addRawMetric('correct_moves', correctMoves);
+            analytics.addRawMetric('incorrect_moves', incorrectMoves);
+            analytics.addRawMetric('accuracy', totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) + '%' : '100%');
+            
+            analytics.endLevel(`Level_${currentLevel}`, true, timeTaken, totalXP);
             // Submit report within the same ongoing session
             analytics.submitReport();
             isLevelActive = false;
         }
 
+        // Update progress with both systems
         if (currentLevel > playerProgress.highestLevelCompleted) {
             playerProgress.highestLevelCompleted = currentLevel;
             saveProgress();
+            
+            // Notify the new progress system
+            if (progressInitialized && gameManager) {
+                gameManager.handleLevelComplete(currentLevel, {
+                    xpEarned: totalXP,
+                    timeTaken: timeTaken,
+                    accuracy: totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) : 100,
+                    totalMoves: totalMoves,
+                    correctMoves: correctMoves,
+                    incorrectMoves: incorrectMoves
+                }).then(() => {
+                    console.log('%c Progress Updated ', 'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;');
+                }).catch(error => {
+                    console.warn('Error updating progress:', error);
+                });
+            }
+            
             updateStartScreen(); // Update the welcome message when progress changes
         }
 
@@ -419,19 +566,33 @@ document.addEventListener('DOMContentLoaded', async () => {
              const r = parseInt(targetCell.dataset.row);
              const c = parseInt(targetCell.dataset.col);
              const puzzle = levels.find(l => l.level === currentLevel);
+             const taskEndTime = Date.now();
+             const taskTime = taskEndTime - taskStartTime;
+             
              if (puzzle) {
                  const correctVal = puzzle.grid[r][c];
                  const isCorrect = (String(selectedValue) === String(correctVal));
                  
+                 // Update counters
+                 totalMoves++;
+                 if (isCorrect) {
+                     correctMoves++;
+                 } else {
+                     incorrectMoves++;
+                 }
+                 
                  analytics.recordTask(
                      `Level_${currentLevel}`,
-                     `Task_Place_${Date.now()}`,
+                     `Task_${totalMoves}_R${r}C${c}`,
                      `Fill Cell (${r},${c})`,
                      String(correctVal),
                      String(selectedValue),
-                     0, 
-                     isCorrect ? 10 : 0
+                     taskTime, 
+                     isCorrect ? CORRECT_PLACEMENT_XP : 0
                  );
+                 
+                 // Reset task timer for next placement
+                 taskStartTime = Date.now();
              }
         }
 
@@ -652,7 +813,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (analytics) {
                 analytics.startLevel(`Level_${currentLevel}`);
                 levelStartTime = Date.now();
+                taskStartTime = Date.now();
                 isLevelActive = true;
+                totalMoves = 0;
+                correctMoves = 0;
+                incorrectMoves = 0;
             }
         }, 300);
     });
@@ -743,8 +908,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (confirm('Are you sure you want to reset all progress? This will remove all level completions.')) {
             playerProgress = { highestLevelCompleted: 0 };
             saveProgress();
-            updateStartScreen();
-            alert('Progress has been reset');
+            
+            // Reset the new progress system as well
+            if (progressInitialized && gameManager) {
+                gameManager.resetProgress().then(() => {
+                    console.log('%c Progress Reset Complete ', 'background: #F44336; color: white; padding: 5px; border-radius: 3px;');
+                    updateStartScreen();
+                    alert('Progress has been reset');
+                }).catch(error => {
+                    console.error('Error resetting progress:', error);
+                    updateStartScreen();
+                    alert('Progress has been reset (with errors)');
+                });
+            } else {
+                updateStartScreen();
+                alert('Progress has been reset');
+            }
         }
     });
 
