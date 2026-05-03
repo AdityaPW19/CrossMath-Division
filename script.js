@@ -196,7 +196,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result.success) {
                 console.log(`%c Progress System Ready - Starting Level: ${result.startLevel} `, 'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;');
                 progressInitialized = true;
-                
+
+                // Override with injected userInfo from the React Native host if it's higher
+                const injectedLevel = window.userInfo && typeof window.userInfo.highestLevelPlayed === 'number'
+                    ? window.userInfo.highestLevelPlayed : null;
+                if (injectedLevel !== null && injectedLevel > (gameManager.getState().highestLevelPlayed || 0)) {
+                    gameManager.highestLevelPlayed = injectedLevel;
+                    gameManager.currentLevel = injectedLevel;
+                    await gameManager.storageManager.saveHighestLevel(injectedLevel);
+                    console.log(`%c userInfo override — highestLevelPlayed set to ${injectedLevel} `, 'background: #FF9800; color: white; padding: 5px; border-radius: 3px;');
+                }
+
                 // Make it available for debugging
                 window.gameManager = gameManager;
                 window.viewProgress = () => {
@@ -323,7 +333,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Analytics
         if (analytics) {
-            analytics.startLevel(`Level_${levelNumber}`);
+            analytics.startLevel(levelNumber);
             levelStartTime = Date.now();
             taskStartTime = Date.now();
             isLevelActive = true;
@@ -364,7 +374,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             analytics.addRawMetric('level_quit', 'true');
             analytics.addRawMetric('accuracy', totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) + '%' : '0%');
             
-            analytics.endLevel(`Level_${currentLevel}`, false, timeTaken, 0);
+            analytics.endLevel(currentLevel, false, timeTaken, 0);
             analytics.submitReport();
             isLevelActive = false;
         }
@@ -397,7 +407,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             analytics.addRawMetric('incorrect_moves', incorrectMoves);
             analytics.addRawMetric('accuracy', totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) + '%' : '100%');
             
-            analytics.endLevel(`Level_${currentLevel}`, true, timeTaken, totalXP);
+            analytics.endLevel(currentLevel, true, timeTaken, totalXP);
             // Submit report within the same ongoing session
             analytics.submitReport();
             isLevelActive = false;
@@ -811,7 +821,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             // Analytics
             if (analytics) {
-                analytics.startLevel(`Level_${currentLevel}`);
+                analytics.startLevel(currentLevel);
                 levelStartTime = Date.now();
                 taskStartTime = Date.now();
                 isLevelActive = true;
@@ -955,7 +965,4 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
     });
-
-    // Initially hide debug panel if you want to make it hidden by default
-    debugPanel.style.display = 'none';
 });
