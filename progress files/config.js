@@ -1,31 +1,30 @@
 /**
  * Configuration - Game and bridge settings
- * Configured for CrossMath Division Game
  */
 
 const CONFIG = {
   // API Configuration
   api: {
-    // Set to null if backend provides payload directly
+    // Set to null for local-only mode (no backend)
     progressUrl: null,
     timeout: 5000,
     retryAttempts: 2,
     cacheDuration: 60000, // 1 minute
-    // If true, expects payload from backend instead of fetching
-    useProvidedPayload: false,  // Using local storage for now
+    // No backend API - use local storage only
+    useProvidedPayload: false,
   },
 
   // Level Configuration
   levels: {
     minLevel: 1,
-    maxLevel: 100,  // Will be updated dynamically based on puzzle data
+    maxLevel: 100,
     defaultLevel: 1,
   },
 
   // Storage Configuration
   storage: {
-    storageKey: 'crossMath-divisionProgress',
-    useAsyncStorage: false, // Set to true for React Native
+    storageKey: 'crossMathDivisionPlayerProgress',
+    useAsyncStorage: false, // Web mode (localStorage)
   },
 
   // Sync Configuration
@@ -45,8 +44,8 @@ const CONFIG = {
     // Enable offline play
     offlineMode: true,
     
-    // Prefer API data over local storage when both available
-    preferApiData: false,  // Prefer local for now (no API)
+    // Use local storage as source of truth (no API)
+    preferApiData: false,
     
     // Validate all data before using
     strictValidation: true,

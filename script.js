@@ -1,17 +1,36 @@
 document.addEventListener('DOMContentLoaded', async () => {
     // MODALS AND SCREENS
     const successModal = document.getElementById('success-modal');
+    const homeContent = document.getElementById('home-content');
     const startContent = document.getElementById('start-content');
+    const levelContent = document.getElementById('level-content');
     const gameContent = document.getElementById('game-content');
 
+    // HOME / SELECT-MODE NAVIGATION
+    const homeCtaGroup = document.querySelector('.home-cta-group');
+    const playNowBtn = document.getElementById('play-now-btn');
+    const howToPlayBtn = document.getElementById('how-to-play-btn');
+    const modeBackBtn = document.getElementById('mode-back-btn');
+
+    function setHomeLoading(isLoading) {
+        if (!homeCtaGroup) return;
+        homeCtaGroup.classList.toggle('is-loading', isLoading);
+    }
+
+    // LEVEL SELECTOR
+    const levelGrid = document.getElementById('level-grid');
+    const levelScreenTitle = document.getElementById('level-screen-title');
+    const levelBackBtn = document.getElementById('level-back-btn');
+    const continueLevelBtn = document.getElementById('continue-level-btn');
+    let activeDifficultyKey = 'easy';
+
     // NEW ELEMENTS
-    const rulesModal = document.getElementById('rules-modal');
+    const tutorialContent = document.getElementById('tutorial-content');
     const welcomeMessage = document.getElementById('welcome-message');
     const playerLevelInfo = document.getElementById('player-level-info');
     const gameInfoList = document.getElementById('game-info');
     const infoBtn = document.getElementById('info-btn');
-    const closeRulesBtn = document.getElementById('close-rules-btn');
-    const backFromRulesBtn = document.getElementById('back-from-rules-btn');
+    const tutorialCloseBtn = document.getElementById('tutorial-close-btn');
 
     // GAME ELEMENTS
     const gridElement = document.getElementById('crossword-grid');
@@ -30,30 +49,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     const playAgainBtn = document.getElementById('play-again-btn');
 
     let currentLevel = 1;
-    let playerProgress = { highestLevelCompleted: 0 };
     let config = {};
     let levels = [];
     let selectedValue = null;
     let selectedElement = null;
     let placementHistory = [];
-    let equationStates = new Map(); // Add this line
+    let equationStates = new Map();
 
     // ANALYTICS
     let analytics = null;
     let levelStartTime = 0;
-    let taskStartTime = 0;
     let isLevelActive = false;
-    let totalMoves = 0;
-    let correctMoves = 0;
-    let incorrectMoves = 0;
-
+    let taskStartTime = 0;
+    let levelResetCount = 0;
+    let levelClearCount = 0;
+    
     // PROGRESS SYSTEM
     let gameManager = null;
-    let progressInitialized = false;
+    let playerProgress = { highestLevelCompleted: 0 };
 
     const B = 'B';
     const LEVEL_COMPLETION_XP = 5;
-    const CORRECT_PLACEMENT_XP = 1;
 
     // AUDIO
     const correctSound = new Audio('assets/audio/correct.mp3');
@@ -94,160 +110,123 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- INITIALIZATION ---
     try {
-        // Load puzzle data first
-        const response = await fetch('puzzles_division.json');
-        const puzzleData = await response.json();
-        config = puzzleData.config;
-        levels = puzzleData.levels;
-        
         // Initialize Analytics
-        // Session persists for the whole gameplay duration (until page reload/close)
         if (typeof AnalyticsManager !== 'undefined') {
             analytics = new AnalyticsManager();
             
-            // Use sessionStorage to store/retrieve the session ID so it persists across page reloads
-            // but is cleared when the tab/browser is closed (new session).
             let sessionId = sessionStorage.getItem('crossMath_sessionId');
             if (!sessionId) {
                 sessionId = 'Session_' + Date.now();
                 sessionStorage.setItem('crossMath_sessionId', sessionId);
             }
             
-            analytics.initialize('CrossMath-division', sessionId);
-            
-            // Make analytics available in console for debugging
-            window.gameAnalytics = analytics;
-            window.viewAnalytics = () => {
-                console.log('%c Analytics Report Data ', 'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;');
-                console.table(analytics.getReportData());
-                return analytics.getReportData();
-            };
-            console.log('%c Analytics Initialized ', 'background: #2196F3; color: white; padding: 5px; border-radius: 3px;');
-            console.log('Use window.viewAnalytics() to see current analytics data');
+            analytics.initialize('CrossMath', sessionId);
+            analytics.addRawMetric('Game_Initialized', new Date().toISOString());
+            analytics.addRawMetric('Session_ID', sessionId);
         }
 
         // Initialize Progress System
-        await initializeProgressSystem();
+        if (typeof CONFIG !== 'undefined' && typeof GameManager !== 'undefined') {
+            // Create progress bridge (local-only mode, no API)
+            const progressBridge = new ProgressBridge({
+                useProvidedPayload: false,
+                timeout: CONFIG.api.timeout,
+                retryAttempts: CONFIG.api.retryAttempts,
+            });
+
+            // Create storage manager
+            const storageManager = new StorageManager({
+                storageKey: CONFIG.storage.storageKey,
+                useAsyncStorage: false,
+            });
+
+            // Get max level from puzzles data
+            const response = await fetch('puzzles.json');
+            const puzzleData = await response.json();
+            config = puzzleData.config;
+            levels = puzzleData.levels;
+            
+            const maxLevel = levels.length;
+
+            // Create validator
+            const validator = new Validator({
+                minLevel: CONFIG.levels.minLevel,
+                maxLevel: maxLevel,
+            });
+
+            // Create game manager
+            gameManager = new GameManager({
+                progressBridge,
+                storageManager,
+                validator,
+                analyticsBridge: analytics,
+                config: CONFIG,
+            });
+
+            // Initialize game manager
+            const initResult = await gameManager.initialize();
+            console.log('[Game] Progress system initialized:', initResult);
+
+            // Override with injected userInfo from WebView if available
+            const injectedLevel = window.userInfo && typeof window.userInfo.highestLevelPlayed === 'number'
+                ? window.userInfo.highestLevelPlayed
+                : null;
+            if (injectedLevel !== null && injectedLevel > (gameManager.getState().highestLevelPlayed || 0)) {
+                console.log('[Game] Using injected highestLevelPlayed:', injectedLevel);
+                gameManager.highestLevelPlayed = injectedLevel;
+                gameManager.currentLevel = injectedLevel;
+                if (gameManager.storageManager) {
+                    await gameManager.storageManager.saveHighestLevel(injectedLevel);
+                }
+            }
+
+            // Load player progress
+            const state = gameManager.getState();
+            playerProgress.highestLevelCompleted = (state.highestLevelPlayed || 1) - 1;
+            
+            console.log('[Game] Player highest level completed:', playerProgress.highestLevelCompleted);
+        } else {
+            // Fallback to old progress system if GameManager not available
+            const response = await fetch('puzzles.json');
+            const puzzleData = await response.json();
+            config = puzzleData.config;
+            levels = puzzleData.levels;
+            loadProgress();
+        }
         
-        // Load progress (will use the new system)
-        loadProgress();
         updateStartScreen();
         populateRulesModal();
-        preloadAudio(); // Preload audio files
-        
-        // Start background music when game loads
+        preloadAudio();
         startBackgroundMusic();
+
+        // Initialization complete: reveal the home CTAs.
+        setHomeLoading(false);
     } catch (error) {
-        console.error("Error loading puzzle data:", error);
+        console.error("Error loading game:", error);
+        setHomeLoading(false);
         startContent.innerHTML = `<h1>Error</h1><p>Could not load game data. Please try again later.</p>`;
         return;
     }
 
-    // --- PROGRESS SYSTEM INITIALIZATION ---
-    async function initializeProgressSystem() {
-        try {
-            console.log('%c Initializing Progress System ', 'background: #9C27B0; color: white; padding: 5px; border-radius: 3px;');
-            
-            // Create Progress Bridge (using local storage mode)
-            const progressBridge = new ProgressBridge({
-                useProvidedPayload: false,  // Not using backend payload for now
-                apiUrl: '',  // No API for now, local storage only
-                timeout: 5000,
-                retryAttempts: 2,
-                cacheDuration: 60000
-            });
-
-            // Create Storage Manager
-            const storageManager = new StorageManager({
-                storageKey: 'crossMath-divisionProgress',
-                useAsyncStorage: false  // Web environment
-            });
-
-            // Create Validator with proper level range
-            const finalLevel = levels.length > 0 ? levels[levels.length - 1].level : 100;
-            const validator = new Validator({
-                minLevel: 1,
-                maxLevel: finalLevel
-            });
-
-            // Create Game Manager
-            gameManager = new GameManager({
-                progressBridge: progressBridge,
-                storageManager: storageManager,
-                validator: validator,
-                analyticsBridge: analytics,  // Link to our analytics
-                config: {
-                    sync: {
-                        syncInterval: 300000,
-                        autoSave: true,
-                        sendAnalytics: true
-                    },
-                    features: {
-                        offlineMode: true,
-                        preferApiData: false,  // Prefer local for now
-                        strictValidation: true
-                    }
-                }
-            });
-
-            // Initialize the game manager
-            const result = await gameManager.initialize();
-            
-            if (result.success) {
-                console.log(`%c Progress System Ready - Starting Level: ${result.startLevel} `, 'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;');
-                progressInitialized = true;
-
-                // Override with injected userInfo from the React Native host if it's higher
-                const injectedLevel = window.userInfo && typeof window.userInfo.highestLevelPlayed === 'number'
-                    ? window.userInfo.highestLevelPlayed : null;
-                if (injectedLevel !== null && injectedLevel > (gameManager.getState().highestLevelPlayed || 0)) {
-                    gameManager.highestLevelPlayed = injectedLevel;
-                    gameManager.currentLevel = injectedLevel;
-                    await gameManager.storageManager.saveHighestLevel(injectedLevel);
-                    console.log(`%c userInfo override — highestLevelPlayed set to ${injectedLevel} `, 'background: #FF9800; color: white; padding: 5px; border-radius: 3px;');
-                }
-
-                // Make it available for debugging
-                window.gameManager = gameManager;
-                window.viewProgress = () => {
-                    console.log('%c Progress State ', 'background: #9C27B0; color: white; padding: 5px; border-radius: 3px;');
-                    console.table(gameManager.getState());
-                    return gameManager.getState();
-                };
-                console.log('Use window.viewProgress() to see current progress state');
-            } else {
-                console.warn('Progress system initialized with fallback');
-                progressInitialized = false;
-            }
-        } catch (error) {
-            console.error('Error initializing progress system:', error);
-            progressInitialized = false;
-        }
-    }
-
     // --- PROGRESS MANAGEMENT ---
     function loadProgress() {
-        // Try to load from the new progress system first
-        if (progressInitialized && gameManager) {
-            const state = gameManager.getState();
-            playerProgress.highestLevelCompleted = state.highestLevelPlayed || 0;
-            console.log("Loaded player progress from GameManager:", playerProgress);
-        } else {
-            // Fallback to old localStorage method
-            const savedProgress = localStorage.getItem('crossMath-divisionPlayerProgress');
-            if (savedProgress) {
-                playerProgress = JSON.parse(savedProgress);
-                console.log("Loaded player progress from localStorage:", playerProgress);
-            }
+        // Fallback for when GameManager is not available
+        const savedProgress = localStorage.getItem('crossMathDivisionPlayerProgress');
+        if (savedProgress) {
+            playerProgress = JSON.parse(savedProgress);
+            console.log("[Fallback] Loaded player progress:", playerProgress);
         }
     }
 
     function saveProgress() {
-        // Save using both systems for backward compatibility
-        localStorage.setItem('crossMath-divisionPlayerProgress', JSON.stringify(playerProgress));
-        
-        // The new system saves automatically through gameManager.handleLevelComplete()
-        // No need to manually save here as well
+        if (gameManager) {
+            // Progress is automatically saved by GameManager
+            console.log('[Game] Progress saved via GameManager');
+        } else {
+            // Fallback to old method
+            localStorage.setItem('crossMathDivisionPlayerProgress', JSON.stringify(playerProgress));
+            console.log('[Fallback] Progress saved to localStorage');
+        }
     }
 
     // --- START SCREEN UPDATES ---
@@ -260,6 +239,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Get the final level number from the hard difficulty range
         const finalLevel = hard.levelRange[1];
+
+        // Highlight the difficulty the player is currently on with side doodle bursts.
+        const currentLevelForMode = Math.min(playerProgress.highestLevelCompleted + 1, finalLevel);
+        let currentModeBtn = easyBtn;
+        if (currentLevelForMode >= hard.levelRange[0]) {
+            currentModeBtn = hardBtn;
+        } else if (currentLevelForMode >= medium.levelRange[0]) {
+            currentModeBtn = mediumBtn;
+        }
+        [easyBtn, mediumBtn, hardBtn].forEach(btn => btn.classList.remove('is-current'));
+        currentModeBtn.classList.add('is-current');
 
         // Update welcome message based on player progress
         if (playerProgress.highestLevelCompleted === 0) {
@@ -287,6 +277,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // --- RULES MODAL FUNCTIONS ---
     function populateRulesModal() {
+        if (!gameInfoList) return;
         // Clear existing content
         gameInfoList.innerHTML = '';
 
@@ -312,18 +303,197 @@ document.addEventListener('DOMContentLoaded', async () => {
         gameInfoList.appendChild(li4);
     }
 
+    // Open the tutorial as a full screen (consistent with other page screens).
     function showRulesModal() {
-        rulesModal.style.display = 'flex';
+        homeContent.style.opacity = '0';
+        homeContent.style.transform = 'translateY(-15px)';
+        homeContent.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+
         setTimeout(() => {
-            rulesModal.classList.add('visible');
-        }, 10);
+            homeContent.style.display = 'none';
+            homeContent.style.opacity = '';
+            homeContent.style.transform = '';
+            homeContent.style.transition = '';
+
+            tutorialContent.style.display = 'flex';
+            startTutorial();
+        }, 300);
     }
 
+    // Close the tutorial and return to the home screen.
     function hideRulesModal() {
-        rulesModal.classList.remove('visible');
+        tutorialContent.style.opacity = '0';
+        tutorialContent.style.transform = 'translateY(15px)';
+        tutorialContent.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+
         setTimeout(() => {
-            rulesModal.style.display = 'none';
+            tutorialContent.style.display = 'none';
+            tutorialContent.style.opacity = '';
+            tutorialContent.style.transform = '';
+            tutorialContent.style.transition = '';
+
+            homeContent.style.display = 'flex';
         }, 300);
+    }
+
+    // --- INTERACTIVE TUTORIAL (self-contained, independent of game logic) ---
+    // Layout of the demo cross. Vertical: 7 + 2 = 9. Horizontal: 8 + 2 = 10.
+    // The two empty boxes the player fills are the center (2) and the far right (10).
+    const tutorialGridEl = document.getElementById('tutorial-grid');
+    const tutorialBankEl = document.getElementById('tutorial-bank');
+    const tutorialFingerEl = document.getElementById('tutorial-finger');
+    const tutorialBannerTextEl = document.getElementById('tutorial-banner-text');
+    const tutorialNextBtn = document.getElementById('tutorial-next-btn');
+    const tutorialNextTextEl = document.getElementById('tutorial-next-text');
+
+    // 5x5 grid map. null = blank (no cell). Each cell has a fixed value or is a fillable slot.
+    const TUT_LAYOUT = [
+        [null,      null,      { v: '7', t: 'static' },  null,      null     ],
+        [null,      null,      { v: '+', t: 'op' },      null,      null     ],
+        [{ v: '8', t: 'static' }, { v: '+', t: 'op' }, { id: 'c', t: 'slot', answer: '2' }, { v: '=', t: 'op' }, { id: 'r', t: 'slot', answer: '10' }],
+        [null,      null,      { v: '=', t: 'op' },      null,      null     ],
+        [null,      null,      { v: '9', t: 'static' },  null,      null     ],
+    ];
+    const TUT_BANK = ['10', '2'];
+    // Cells that should turn green when an answer is correctly placed (the equation members).
+    const TUT_GREEN_CELLS = ['7', '+', '=', '9', '8'];
+
+    let tutorialStep = 0;
+    let tutorialCellEls = {};
+
+    function buildTutorialBoard() {
+        tutorialGridEl.innerHTML = '';
+        tutorialCellEls = {};
+        TUT_LAYOUT.forEach((row, r) => {
+            row.forEach((cell, c) => {
+                const el = document.createElement('div');
+                if (cell === null) {
+                    el.className = 'tcell tcell--blank';
+                } else if (cell.t === 'slot') {
+                    el.className = 'tcell tcell--slot';
+                    el.dataset.slot = cell.id;
+                    tutorialCellEls[cell.id] = el;
+                } else {
+                    el.className = 'tcell tcell--static';
+                    el.textContent = cell.v;
+                    el.dataset.value = cell.v;
+                }
+                tutorialGridEl.appendChild(el);
+            });
+        });
+    }
+
+    function buildTutorialBank() {
+        tutorialBankEl.innerHTML = '';
+        TUT_BANK.forEach(num => {
+            const el = document.createElement('div');
+            el.className = 'tnum';
+            el.textContent = num;
+            el.dataset.num = num;
+            tutorialBankEl.appendChild(el);
+        });
+    }
+
+    function getTutNum(num) {
+        return tutorialBankEl.querySelector(`.tnum[data-num="${num}"]`);
+    }
+
+    function clearTutHighlights() {
+        tutorialBankEl.querySelectorAll('.tnum').forEach(n => n.classList.remove('selected', 'hint'));
+        Object.values(tutorialCellEls).forEach(c => c.classList.remove('active-target'));
+        tutorialFingerEl.classList.remove('visible');
+    }
+
+    // Point the finger near a target element. Uses offsetLeft/Top within the board
+    // so it is unaffected by the modal's open/scale transition.
+    function pointFingerAt(el, offsetX = 18, offsetY = 14) {
+        const x = el.offsetLeft + el.offsetWidth / 2 + offsetX;
+        const y = el.offsetTop + el.offsetHeight / 2 + offsetY;
+        tutorialFingerEl.style.left = `${x}px`;
+        tutorialFingerEl.style.top = `${y}px`;
+        tutorialFingerEl.classList.add('visible');
+    }
+
+    function setTutorialBanner(text, state) {
+        tutorialBannerTextEl.textContent = text;
+        const banner = tutorialBannerTextEl.closest('.tutorial__banner');
+        banner.classList.remove('is-correct', 'is-wrong');
+        if (state) banner.classList.add(state);
+    }
+
+    // --- Tutorial steps ---
+    // Step 0: Pick the right number (finger on the correct bank number "2")
+    // Step 1: Tap an empty box (number 2 selected, finger on center slot)
+    // Step 2: Correct! fill center with 2, then prompt placing 10 in right slot
+    // Step 3: Completed -> confetti + "Got It!"
+    function startTutorial() {
+        tutorialStep = 0;
+        buildTutorialBoard();
+        buildTutorialBank();
+        renderTutorialStep();
+    }
+
+    function renderTutorialStep() {
+        clearTutHighlights();
+        const board = tutorialFingerEl.parentElement;
+        board.classList.remove('tutorial--celebrate');
+        tutorialNextBtn.classList.remove('visible');
+
+        if (tutorialStep === 0) {
+            setTutorialBanner('Pick the right number');
+            const two = getTutNum('2');
+            two.classList.add('selected');
+            getTutNum('10').classList.remove('used');
+            requestAnimationFrame(() => pointFingerAt(two, 14, 16));
+        } else if (tutorialStep === 1) {
+            setTutorialBanner('Tap an empty box');
+            getTutNum('2').classList.add('selected');
+            const center = tutorialCellEls.c;
+            center.classList.add('active-target');
+            requestAnimationFrame(() => pointFingerAt(center, 14, 14));
+        } else if (tutorialStep === 2) {
+            // Place "2" in center, mark correct.
+            const center = tutorialCellEls.c;
+            center.textContent = '2';
+            center.classList.add('tcell--correct');
+            getTutNum('2').classList.add('used');
+            TUT_GREEN_CELLS.forEach(v => {
+                const el = tutorialGridEl.querySelector(`.tcell--static[data-value="${v}"]`);
+                if (el) el.classList.add('tcell--correct');
+            });
+            setTutorialBanner('Correct', 'is-correct');
+            // Now prompt the player to place the last number (10) in the right slot.
+            setTimeout(() => {
+                if (tutorialStep !== 2) return;
+                setTutorialBanner('Tap an empty box');
+                const ten = getTutNum('10');
+                ten.classList.add('selected');
+                const right = tutorialCellEls.r;
+                right.classList.add('active-target');
+                pointFingerAt(right, 14, 14);
+            }, 1100);
+        } else if (tutorialStep === 3) {
+            // Completed state
+            const right = tutorialCellEls.r;
+            right.textContent = '10';
+            right.classList.add('tcell--correct');
+            tutorialCellEls.c.classList.add('tcell--correct');
+            getTutNum('2').classList.add('used');
+            getTutNum('10').classList.add('used');
+            setTutorialBanner('Great! You have completed the equation.', 'is-correct');
+            board.classList.add('tutorial--celebrate');
+            tutorialNextTextEl.textContent = 'GOT IT!';
+            tutorialNextBtn.classList.add('visible');
+        }
+    }
+
+    function advanceTutorial() {
+        if (tutorialStep < 3) {
+            tutorialStep++;
+            renderTutorialStep();
+        } else {
+            hideRulesModal();
+        }
     }
 
     // --- GAME FLOW ---
@@ -331,28 +501,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentLevel = levelNumber;
         generatePuzzle(levelNumber);
         
-        // Analytics
+        // Analytics - Reset level counters
+        levelResetCount = 0;
+        levelClearCount = 0;
+        
         if (analytics) {
             analytics.startLevel(levelNumber);
             levelStartTime = Date.now();
-            taskStartTime = Date.now();
             isLevelActive = true;
-            totalMoves = 0;
-            correctMoves = 0;
-            incorrectMoves = 0;
         }
 
-        // UI Transition: Fade out start screen
-        startContent.style.opacity = '0';
-        startContent.style.transform = 'translateY(-15px)';
-        startContent.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+        // UI Transition: Fade out whichever menu screen is active
+        const outgoing = (levelContent.style.display === 'flex') ? levelContent : startContent;
+        outgoing.style.opacity = '0';
+        outgoing.style.transform = 'translateY(-15px)';
+        outgoing.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
 
         setTimeout(() => {
-            startContent.style.display = 'none';
-            // Reset styles for return
-            startContent.style.opacity = '';
-            startContent.style.transform = '';
-            startContent.style.transition = '';
+            // Ensure all menu screens are hidden + styles reset for return
+            [startContent, levelContent].forEach(el => {
+                el.style.display = 'none';
+                el.style.opacity = '';
+                el.style.transform = '';
+                el.style.transition = '';
+            });
             
             gameContent.style.display = 'flex';
             
@@ -366,15 +538,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     function returnToStartScreen() {
         if (analytics && isLevelActive) {
             const timeTaken = Date.now() - levelStartTime;
-            
-            // Add metrics for incomplete level
-            analytics.addRawMetric('total_moves', totalMoves);
-            analytics.addRawMetric('correct_moves', correctMoves);
-            analytics.addRawMetric('incorrect_moves', incorrectMoves);
-            analytics.addRawMetric('level_quit', 'true');
-            analytics.addRawMetric('accuracy', totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) + '%' : '0%');
-            
             analytics.endLevel(currentLevel, false, timeTaken, 0);
+            // Track level abandonment metrics
+            analytics.addRawMetric('Level_Abandoned', currentLevel);
+            analytics.addRawMetric(`Level_${currentLevel}_Resets`, levelResetCount);
+            analytics.addRawMetric(`Level_${currentLevel}_Clears`, levelClearCount);
             analytics.submitReport();
             isLevelActive = false;
         }
@@ -391,50 +559,170 @@ document.addEventListener('DOMContentLoaded', async () => {
             gameContent.style.transform = '';
             gameContent.style.transition = '';
 
-            startContent.style.display = 'block';
-            updateStartScreen(); // Update the welcome message when returning to start screen
+            // Return to the level selection screen for the active difficulty
+            // (rather than jumping all the way back to the mode-selection screen).
+            if (activeDifficultyKey) {
+                buildLevelGrid(activeDifficultyKey);
+                levelContent.style.display = 'flex';
+            } else {
+                startContent.style.display = 'flex';
+                updateStartScreen();
+            }
+        }, 300);
+    }
+
+    // --- HOME <-> SELECT MODE NAVIGATION (UI only) ---
+    function showSelectMode() {
+        homeContent.style.opacity = '0';
+        homeContent.style.transform = 'translateY(-15px)';
+        homeContent.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+
+        setTimeout(() => {
+            homeContent.style.display = 'none';
+            homeContent.style.opacity = '';
+            homeContent.style.transform = '';
+            homeContent.style.transition = '';
+
+            startContent.style.display = 'flex';
+            updateStartScreen();
+        }, 300);
+    }
+
+    function showHomeScreen() {
+        startContent.style.opacity = '0';
+        startContent.style.transform = 'translateY(15px)';
+        startContent.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+
+        setTimeout(() => {
+            startContent.style.display = 'none';
+            startContent.style.opacity = '';
+            startContent.style.transform = '';
+            startContent.style.transition = '';
+
+            homeContent.style.display = 'flex';
+        }, 300);
+    }
+
+    // --- LEVEL SELECTOR (UI only; uses existing unlock + startGame logic) ---
+    const LOCK_SVG = '<svg class="level-lock" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>';
+
+    function buildLevelGrid(difficultyKey) {
+        const diff = config.difficulties[difficultyKey];
+        if (!diff) return;
+
+        levelGrid.innerHTML = '';
+
+        const [rangeStart, rangeEnd] = diff.levelRange;
+        // The next level the player can play (first uncompleted level).
+        const nextPlayable = playerProgress.highestLevelCompleted + 1;
+
+        for (let lvl = rangeStart; lvl <= rangeEnd; lvl++) {
+            // A level exists in data and is unlocked once all prior levels are done.
+            const levelExists = levels.some(l => l.level === lvl);
+            const unlocked = lvl <= nextPlayable && levelExists;
+
+            const tile = document.createElement('button');
+            tile.className = 'level-tile';
+            tile.dataset.level = String(lvl);
+
+            const label = document.createElement('span');
+            label.textContent = String(lvl);
+            tile.appendChild(label);
+
+            if (!unlocked) {
+                tile.classList.add('locked');
+                tile.disabled = true;
+                tile.insertAdjacentHTML('beforeend', LOCK_SVG);
+            } else {
+                if (lvl === nextPlayable) {
+                    tile.classList.add('current');
+                }
+                tile.addEventListener('click', () => startGame(lvl));
+            }
+
+            levelGrid.appendChild(tile);
+        }
+
+        // Continue button: jump to the next playable level within this difficulty.
+        let continueLevel = nextPlayable;
+        if (continueLevel < rangeStart) continueLevel = rangeStart;
+        if (continueLevel > rangeEnd) continueLevel = rangeStart;
+        continueLevelBtn.querySelector('span').textContent = `CONTINUE LEVEL ${continueLevel}`;
+        continueLevelBtn.dataset.level = String(continueLevel);
+    }
+
+    function showLevelSelect(difficultyKey) {
+        activeDifficultyKey = difficultyKey;
+        const diff = config.difficulties[difficultyKey];
+        levelScreenTitle.textContent = (diff && diff.displayName ? diff.displayName : difficultyKey).toUpperCase();
+        buildLevelGrid(difficultyKey);
+
+        startContent.style.opacity = '0';
+        startContent.style.transform = 'translateY(-15px)';
+        startContent.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+
+        setTimeout(() => {
+            startContent.style.display = 'none';
+            startContent.style.opacity = '';
+            startContent.style.transform = '';
+            startContent.style.transition = '';
+
+            levelContent.style.display = 'flex';
+        }, 300);
+    }
+
+    function backToSelectMode() {
+        levelContent.style.opacity = '0';
+        levelContent.style.transform = 'translateY(15px)';
+        levelContent.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+
+        setTimeout(() => {
+            levelContent.style.display = 'none';
+            levelContent.style.opacity = '';
+            levelContent.style.transform = '';
+            levelContent.style.transition = '';
+
+            startContent.style.display = 'flex';
+            updateStartScreen();
         }, 300);
     }
 
     function onPuzzleComplete() {
-        const timeTaken = Date.now() - levelStartTime;
-        const totalXP = (correctMoves * CORRECT_PLACEMENT_XP) + LEVEL_COMPLETION_XP;
-        
         if (analytics && isLevelActive) {
-            // Add additional metrics
-            analytics.addRawMetric('total_moves', totalMoves);
-            analytics.addRawMetric('correct_moves', correctMoves);
-            analytics.addRawMetric('incorrect_moves', incorrectMoves);
-            analytics.addRawMetric('accuracy', totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) + '%' : '100%');
-            
-            analytics.endLevel(currentLevel, true, timeTaken, totalXP);
-            // Submit report within the same ongoing session
+            const timeTaken = Date.now() - levelStartTime;
+            analytics.endLevel(currentLevel, true, timeTaken, LEVEL_COMPLETION_XP);
+            analytics.addRawMetric(`Level_${currentLevel}_Completed`, true);
+            analytics.addRawMetric(`Level_${currentLevel}_Resets`, levelResetCount);
+            analytics.addRawMetric(`Level_${currentLevel}_Clears`, levelClearCount);
+            analytics.addRawMetric(`Level_${currentLevel}_TimeTaken`, timeTaken);
             analytics.submitReport();
             isLevelActive = false;
         }
 
-        // Update progress with both systems
-        if (currentLevel > playerProgress.highestLevelCompleted) {
+        // Update progress
+        const wasNewHighest = currentLevel > playerProgress.highestLevelCompleted;
+        
+        if (wasNewHighest) {
             playerProgress.highestLevelCompleted = currentLevel;
-            saveProgress();
             
-            // Notify the new progress system
-            if (progressInitialized && gameManager) {
+            // Use GameManager to handle level completion
+            if (gameManager) {
                 gameManager.handleLevelComplete(currentLevel, {
-                    xpEarned: totalXP,
-                    timeTaken: timeTaken,
-                    accuracy: totalMoves > 0 ? (correctMoves / totalMoves * 100).toFixed(2) : 100,
-                    totalMoves: totalMoves,
-                    correctMoves: correctMoves,
-                    incorrectMoves: incorrectMoves
+                    xpEarned: LEVEL_COMPLETION_XP,
+                    timeTaken: Date.now() - levelStartTime,
+                    resets: levelResetCount,
+                    clears: levelClearCount,
                 }).then(() => {
-                    console.log('%c Progress Updated ', 'background: #4CAF50; color: white; padding: 5px; border-radius: 3px;');
-                }).catch(error => {
-                    console.warn('Error updating progress:', error);
+                    console.log('[Game] Progress synced via GameManager');
+                    updateStartScreen();
+                }).catch(err => {
+                    console.error('[Game] Error saving progress:', err);
                 });
+            } else {
+                // Fallback to old method
+                saveProgress();
+                updateStartScreen();
             }
-            
-            updateStartScreen(); // Update the welcome message when progress changes
         }
 
         // Play completion sound
@@ -547,6 +835,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         selectedValue = num;
         selectedElement = element;
         element.classList.add('selected');
+        
+        // Start task timing when number is selected
+        taskStartTime = Date.now();
     }
 
     function pickupNumberFromGrid(cell) {
@@ -571,40 +862,35 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         targetCell.textContent = selectedValue;
         
-        // Analytics Task Recording
+        // Analytics Task Recording with timing
         if (analytics && isLevelActive) {
              const r = parseInt(targetCell.dataset.row);
              const c = parseInt(targetCell.dataset.col);
              const puzzle = levels.find(l => l.level === currentLevel);
-             const taskEndTime = Date.now();
-             const taskTime = taskEndTime - taskStartTime;
-             
              if (puzzle) {
                  const correctVal = puzzle.grid[r][c];
                  const isCorrect = (String(selectedValue) === String(correctVal));
-                 
-                 // Update counters
-                 totalMoves++;
-                 if (isCorrect) {
-                     correctMoves++;
-                 } else {
-                     incorrectMoves++;
-                 }
+                 const taskTime = taskStartTime > 0 ? Date.now() - taskStartTime : 0;
                  
                  analytics.recordTask(
                      `Level_${currentLevel}`,
-                     `Task_${totalMoves}_R${r}C${c}`,
+                     `Task_Place_${Date.now()}`,
                      `Fill Cell (${r},${c})`,
                      String(correctVal),
                      String(selectedValue),
                      taskTime, 
-                     isCorrect ? CORRECT_PLACEMENT_XP : 0
+                     isCorrect ? 1 : 0
                  );
                  
-                 // Reset task timer for next placement
-                 taskStartTime = Date.now();
+                 // Track incorrect placements as a metric
+                 if (!isCorrect) {
+                     analytics.addRawMetric(`Level_${currentLevel}_IncorrectPlacements`, 1);
+                 }
              }
         }
+        
+        // Reset task timer for next placement
+        taskStartTime = Date.now();
 
         // Add animation feedback
         targetCell.classList.remove('animate-pop');
@@ -632,6 +918,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             lastCell.classList.remove('correct', 'incorrect');
             lastPlacement.bankItem.classList.remove('used');
             validateEquations();
+            
+            // Analytics - Track clear usage
+            if (analytics && isLevelActive) {
+                levelClearCount++;
+                analytics.addRawMetric('Clear_Button_Used', `Level_${currentLevel}`);
+            }
         }
     }
 
@@ -804,14 +1096,60 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     // --- Event Listeners ---
     // New event listeners for rules modal
-    infoBtn.addEventListener('click', showRulesModal);
-    closeRulesBtn.addEventListener('click', hideRulesModal);
-    backFromRulesBtn.addEventListener('click', hideRulesModal);
+    infoBtn.addEventListener('click', () => {
+        showRulesModal();
+        if (analytics) {
+            analytics.addRawMetric('Rules_Modal_Opened', Date.now());
+        }
+    });
+    if (tutorialCloseBtn) tutorialCloseBtn.addEventListener('click', hideRulesModal);
+    if (tutorialNextBtn) tutorialNextBtn.addEventListener('click', advanceTutorial);
+
+    // Tutorial interactions: clicking the highlighted number or the target box advances.
+    if (tutorialBankEl) {
+        tutorialBankEl.addEventListener('click', (e) => {
+            const num = e.target.closest('.tnum');
+            if (!num || num.classList.contains('used')) return;
+            if (tutorialStep === 0 && num.dataset.num === '2') {
+                advanceTutorial();
+            }
+        });
+    }
+    if (tutorialGridEl) {
+        tutorialGridEl.addEventListener('click', (e) => {
+            const cell = e.target.closest('.tcell--slot');
+            if (!cell || !cell.classList.contains('active-target')) return;
+            if (tutorialStep === 1 && cell.dataset.slot === 'c') {
+                advanceTutorial();
+            } else if (tutorialStep === 2 && cell.dataset.slot === 'r') {
+                advanceTutorial();
+            }
+        });
+    }
+
+    // Home / Select-mode navigation
+    if (playNowBtn) playNowBtn.addEventListener('click', showSelectMode);
+    if (modeBackBtn) modeBackBtn.addEventListener('click', showHomeScreen);
+    if (howToPlayBtn) {
+        howToPlayBtn.addEventListener('click', () => {
+            showRulesModal();
+            if (analytics) {
+                analytics.addRawMetric('Rules_Modal_Opened', Date.now());
+            }
+        });
+    }
 
     // Existing event listeners
     backBtn.addEventListener('click', returnToStartScreen);
     clearBtn.addEventListener('click', clearLastEntry);
-    resetBtn.addEventListener('click', () => generatePuzzle(currentLevel));
+    resetBtn.addEventListener('click', () => {
+        generatePuzzle(currentLevel);
+        // Analytics - Track reset usage
+        if (analytics && isLevelActive) {
+            levelResetCount++;
+            analytics.addRawMetric('Reset_Button_Used', `Level_${currentLevel}`);
+        }
+    });
 
     playAgainBtn.addEventListener('click', () => {
         successModal.classList.remove('visible');
@@ -819,15 +1157,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             successModal.style.display = 'none';
             generatePuzzle(currentLevel);
             
-            // Analytics
+            // Analytics - Track replay
+            levelResetCount = 0;
+            levelClearCount = 0;
             if (analytics) {
                 analytics.startLevel(currentLevel);
+                analytics.addRawMetric('Level_Replayed', currentLevel);
                 levelStartTime = Date.now();
-                taskStartTime = Date.now();
                 isLevelActive = true;
-                totalMoves = 0;
-                correctMoves = 0;
-                incorrectMoves = 0;
             }
         }, 300);
     });
@@ -850,17 +1187,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     easyBtn.addEventListener('click', () => {
-        const startLevel = Math.max(config.difficulties.easy.levelRange[0], playerProgress.highestLevelCompleted + 1);
-        startGame(startLevel > config.difficulties.easy.levelRange[1] ? config.difficulties.easy.levelRange[0] : startLevel);
+        // Analytics - Track difficulty selection
+        if (analytics) {
+            analytics.addRawMetric('Difficulty_Selected', 'Easy');
+        }
+        showLevelSelect('easy');
     });
     mediumBtn.addEventListener('click', () => {
-        const startLevel = Math.max(config.difficulties.medium.levelRange[0], playerProgress.highestLevelCompleted + 1);
-        startGame(startLevel > config.difficulties.medium.levelRange[1] ? config.difficulties.medium.levelRange[0] : startLevel);
+        // Analytics - Track difficulty selection
+        if (analytics) {
+            analytics.addRawMetric('Difficulty_Selected', 'Medium');
+        }
+        showLevelSelect('medium');
     });
     hardBtn.addEventListener('click', () => {
-        const startLevel = Math.max(config.difficulties.hard.levelRange[0], playerProgress.highestLevelCompleted + 1);
-        startGame(startLevel > config.difficulties.hard.levelRange[1] ? config.difficulties.hard.levelRange[0] : startLevel);
+        // Analytics - Track difficulty selection
+        if (analytics) {
+            analytics.addRawMetric('Difficulty_Selected', 'Hard');
+        }
+        showLevelSelect('hard');
     });
+
+    // Level selector navigation
+    if (levelBackBtn) levelBackBtn.addEventListener('click', backToSelectMode);
+    if (continueLevelBtn) {
+        continueLevelBtn.addEventListener('click', () => {
+            const lvl = parseInt(continueLevelBtn.dataset.level, 10);
+            if (!isNaN(lvl)) {
+                if (analytics) {
+                    analytics.addRawMetric('Level_Started_From_Menu', lvl);
+                }
+                startGame(lvl);
+            }
+        });
+    }
 
     // --- DEBUG TOOLS ---
     const debugPanel = document.getElementById('debug-panel');
@@ -916,21 +1276,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Reset player progress (for testing)
     resetProgressBtn.addEventListener('click', () => {
         if (confirm('Are you sure you want to reset all progress? This will remove all level completions.')) {
-            playerProgress = { highestLevelCompleted: 0 };
-            saveProgress();
-            
-            // Reset the new progress system as well
-            if (progressInitialized && gameManager) {
+            if (gameManager) {
+                // Use GameManager to reset
                 gameManager.resetProgress().then(() => {
-                    console.log('%c Progress Reset Complete ', 'background: #F44336; color: white; padding: 5px; border-radius: 3px;');
+                    playerProgress = { highestLevelCompleted: 0 };
                     updateStartScreen();
                     alert('Progress has been reset');
-                }).catch(error => {
-                    console.error('Error resetting progress:', error);
-                    updateStartScreen();
-                    alert('Progress has been reset (with errors)');
+                }).catch(err => {
+                    console.error('[Game] Error resetting progress:', err);
                 });
             } else {
+                // Fallback to old method
+                playerProgress = { highestLevelCompleted: 0 };
+                saveProgress();
                 updateStartScreen();
                 alert('Progress has been reset');
             }
@@ -940,7 +1298,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Update level input max value once levels are loaded
     levelInput.max = levels.length;
 
-    // Debug mode key sequence detector
+    // Debug mode key sequence detector (type "debug" to enable)
     const debugSequence = ['d', 'e', 'b', 'u', 'g'];
     let debugKeyBuffer = [];
 
