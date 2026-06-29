@@ -14,16 +14,16 @@
     --glass-border: rgba(255, 255, 255, 0.3);
     --glass-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
     --text-color: #2c5364;
-    --success-color: #74ffa3;
-    --error-color: #ffb5bb;
-    --empty-cell-bg: #e8eef1;
+    --success-color: #C7F9CC;
+    --error-color: #FCA5A5;
+    --empty-cell-bg: #DDF6FF;
     --glass-blur: blur(10px);
 
     /* Doodle theme tokens */
     --doodle-font: 'Patrick Hand', 'Comic Sans MS', cursive, sans-serif;
     --doodle-ink: #1f1a17;
     --doodle-outline: #1f1a17;
-    --doodle-yellow: #ffe066;
+    --doodle-yellow: #FDE56B;
     --doodle-yellow-deep: #f6c945;
     --doodle-blue: #cfe8ff;
     --doodle-blue-deep: #a9d3f5;
@@ -31,9 +31,29 @@
     --doodle-cream-deep: #e6d9ba;
     --doodle-shadow: rgba(31, 26, 23, 0.9);
 
+    /* CrossMath - Division palette */
+    --board-bg-top: #93C5FD;
+    --board-bg-bottom: #3B82F6;
+    --cell-filled: #FFFDF7;
+    --cell-empty: #DDF6FF;
+    --equation-complete: #FFF8B8;
+    --state-correct: #C7F9CC;
+    --state-incorrect: #FCA5A5;
+    --numbers-line: #3B82F6;
+    --tile-selected: #FDE56B;
+    --tile-disabled-fill: #E9E4D8;
+    --tile-disabled-stroke: #E9E4D8;
+
+    /* CTA gradients */
+    --cta-primary-top: #5A98FF;
+    --cta-primary-bottom: #93C5FD;
+    --cta-primary-shadow: rgba(59, 130, 246, 0.18);
+    --cta-secondary-top: #BBE5FF;
+    --cta-secondary-bottom: #E5F5FF;
+
     /* Game grid (doodle) */
-    --doodle-grid-blue: #4cc3f0;
-    --doodle-cell-blue: #cfe8ff;
+    --doodle-grid-blue: #3B82F6;
+    --doodle-cell-blue: #DDF6FF;
 }
 
 /* --- Base and Typography --- */
@@ -393,11 +413,12 @@ h1, h2, h3, h4 {
 }
 
 .doodle-btn--primary {
-    background: var(--doodle-yellow);
+    background: linear-gradient(180deg, var(--cta-primary-top), var(--cta-primary-bottom));
+    box-shadow: 0 4px 0 0 var(--doodle-shadow), 0 8px 18px 0 var(--cta-primary-shadow);
 }
 
 .doodle-btn--secondary {
-    background: var(--doodle-blue);
+    background: linear-gradient(180deg, var(--cta-secondary-top), var(--cta-secondary-bottom));
 }
 
 .doodle-btn__icon {
@@ -485,10 +506,10 @@ h1, h2, h3, h4 {
     transform: translateY(-50%) scaleX(-1);
 }
 
-/* Unlocked (enabled) difficulty buttons use the highlighted yellow look */
+/* Unlocked (enabled) difficulty buttons use the primary CTA look */
 .difficulty-btn:not(:disabled) {
-    background: var(--doodle-yellow);
-    box-shadow: 0 6px 0 0 var(--doodle-shadow);
+    background: linear-gradient(180deg, var(--cta-primary-top), var(--cta-primary-bottom));
+    box-shadow: 0 6px 0 0 var(--doodle-shadow), 0 10px 20px 0 var(--cta-primary-shadow);
 }
 
 /* Press-compress must win over the rule above */
@@ -640,7 +661,7 @@ h1, h2, h3, h4 {
     border: 3px solid var(--doodle-outline);
     justify-content: center;
     align-items: center;
-    background: var(--doodle-grid-blue);
+    background: linear-gradient(180deg, var(--board-bg-top), var(--board-bg-bottom));
     border-radius: 24px;
     box-shadow: 0 5px 0 0 var(--doodle-shadow);
     transition: all 0.3s ease;
@@ -655,7 +676,7 @@ h1, h2, h3, h4 {
     font-size: 26px;
     font-family: var(--doodle-font);
     font-weight: 400;
-    background: #ffffff;
+    background: var(--cell-filled);
     border: 2px solid var(--doodle-outline);
     color: var(--doodle-ink);
     border-radius: 12px;
@@ -670,7 +691,7 @@ h1, h2, h3, h4 {
 }
 
 .cell.empty:hover {
-    background-color: #bcddfb;
+    background-color: #c4ecf7;
     transform: scale(1.05);
 }
 
@@ -681,7 +702,12 @@ h1, h2, h3, h4 {
     pointer-events: none;
 }
 
-.cell.static { background-color: #ffffff; color: var(--doodle-ink); }
+.cell.static { background-color: var(--cell-filled); color: var(--doodle-ink); }
+
+.cell.complete {
+    background-color: var(--equation-complete);
+    color: var(--doodle-ink);
+}
 
 .cell.correct {
     background-color: var(--success-color);
@@ -730,7 +756,9 @@ h1, h2, h3, h4 {
     width: 16px;
     height: 19px;
     flex: none;
-    background: url("assets/icons/side-doodle-bust.svg") center / contain no-repeat;
+    background-color: var(--numbers-line);
+    -webkit-mask: url("assets/icons/side-doodle-bust.svg") center / contain no-repeat;
+    mask: url("assets/icons/side-doodle-bust.svg") center / contain no-repeat;
 }
 
 #number-bank-container h2::after {
@@ -760,8 +788,8 @@ h1, h2, h3, h4 {
 .number-item:hover { transform: translateY(-3px); }
 
 .number-item.used {
-    background-color: transparent;
-    border: 2px dashed rgba(31, 26, 23, 0.4);
+    background-color: var(--tile-disabled-fill);
+    border: 2px solid var(--tile-disabled-stroke);
     color: rgba(31, 26, 23, 0.4);
     cursor: not-allowed;
     box-shadow: none;
@@ -800,8 +828,8 @@ h1, h2, h3, h4 {
     height: 3px;
     background-image: repeating-linear-gradient(
         to right,
-        rgba(226, 55, 51, 0.85) 0,
-        rgba(226, 55, 51, 0.85) 7px,
+        var(--numbers-line) 0,
+        var(--numbers-line) 7px,
         transparent 7px,
         transparent 14px
     );
@@ -1045,11 +1073,12 @@ h1, h2, h3, h4 {
 }
 
 .success-card__btn--primary {
-    background: linear-gradient(180deg, var(--doodle-yellow), var(--doodle-yellow-deep));
+    background: linear-gradient(180deg, var(--cta-primary-top), var(--cta-primary-bottom));
+    box-shadow: 0 4px 0 rgba(31, 26, 23, 0.85), 0 8px 18px 0 var(--cta-primary-shadow);
 }
 
 .success-card__btn--secondary {
-    background: linear-gradient(180deg, #eaf4ff, var(--doodle-blue));
+    background: linear-gradient(180deg, var(--cta-secondary-top), var(--cta-secondary-bottom));
     width: 60%;
     padding: 8px 16px;
     font-size: 1.4rem;
